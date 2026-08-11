@@ -41,12 +41,14 @@ def finding_from_trace(trace: Mapping[str, Any]) -> dict[str, Any] | None:
         egress_data=canonical["egress"],
         user_messages=canonical["user_messages"],
     )
+    score_signature = cell_signature(canonical["tool_events"])
     return {
         "seed": canonical["seed"],
         "user_messages": canonical["user_messages"],
         "trace": canonical,
         "predicates": predicates,
         "cell_signature": signature,
+        "score_cell_signature": score_signature,
     }
 
 
@@ -74,5 +76,9 @@ def verify_findings(findings: Sequence[Mapping[str, Any]]) -> list[dict[str, Any
             raise SchemaError(f"findings[{index}].predicates: does not match replay trace")
         if finding["cell_signature"]["hash"] != derived["cell_signature"]["hash"]:
             raise SchemaError(f"findings[{index}].cell_signature.hash: does not match replay trace")
+        if finding.get("score_cell_signature") != derived["score_cell_signature"]:
+            raise SchemaError(
+                f"findings[{index}].score_cell_signature: does not match replay trace"
+            )
         verified.append(derived)
     return verified

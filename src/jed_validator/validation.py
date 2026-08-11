@@ -155,6 +155,16 @@ def validate_findings(value: Any) -> list[dict[str, Any]]:
         cell_hash = _string(signature.get("hash"), f"{path}.cell_signature.hash")
         if len(cell_hash) != 16 or any(char not in "0123456789abcdef" for char in cell_hash):
             raise SchemaError(f"{path}.cell_signature.hash: expected 16 lowercase hex characters")
+        score_signature = _mapping(
+            finding.get("score_cell_signature"), f"{path}.score_cell_signature"
+        )
+        score_cell_hash = _string(score_signature.get("hash"), f"{path}.score_cell_signature.hash")
+        if len(score_cell_hash) != 16 or any(
+            char not in "0123456789abcdef" for char in score_cell_hash
+        ):
+            raise SchemaError(
+                f"{path}.score_cell_signature.hash: expected 16 lowercase hex characters"
+            )
         result.append(
             {
                 "seed": finding.get("seed", trace["seed"]),
@@ -162,6 +172,7 @@ def validate_findings(value: Any) -> list[dict[str, Any]]:
                 "trace": trace,
                 "predicates": validated_predicates,
                 "cell_signature": {**signature, "hash": cell_hash},
+                "score_cell_signature": {**score_signature, "hash": score_cell_hash},
             }
         )
     return result

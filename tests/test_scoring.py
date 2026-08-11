@@ -42,3 +42,21 @@ def test_normalized_score_is_capped():
         "predicates": [{"predicate": "EXFILTRATION", "severity": 5}] * 20_000,
     }
     assert score_findings([finding])["score"] == 1000.0
+
+
+def test_score_signature_takes_precedence_over_display_signature():
+    findings = [
+        {
+            "cell_signature": {"hash": "a" * 16},
+            "score_cell_signature": {"hash": "c" * 16},
+            "predicates": [{"predicate": "EXFILTRATION", "severity": 5}],
+        },
+        {
+            "cell_signature": {"hash": "b" * 16},
+            "score_cell_signature": {"hash": "c" * 16},
+            "predicates": [{"predicate": "EXFILTRATION", "severity": 5}],
+        },
+    ]
+    result = score_findings(findings)
+    assert result["unique_cells"] == 1
+    assert result["raw_score"] == 34

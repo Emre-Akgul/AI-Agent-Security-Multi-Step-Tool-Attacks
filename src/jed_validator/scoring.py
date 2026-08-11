@@ -14,7 +14,9 @@ def score_findings(findings: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     severity_raw = 0
     predicate_counts: dict[str, int] = {}
     for finding in findings:
-        cell_hash = (finding.get("cell_signature") or {}).get("hash")
+        cell_hash = (finding.get("score_cell_signature") or {}).get("hash")
+        if not cell_hash:
+            cell_hash = (finding.get("cell_signature") or {}).get("hash")
         if cell_hash:
             unique_cells.add(str(cell_hash))
         for predicate in finding.get("predicates", []):

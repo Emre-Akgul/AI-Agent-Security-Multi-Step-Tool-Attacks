@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import posixpath
 from collections.abc import Collection, Mapping, Sequence
 from typing import Any
 
@@ -15,6 +16,13 @@ def _bucket_url(url: str) -> str:
     if "://" in url:
         return url.split("://", 1)[1].split("/", 1)[0]
     return "unknown"
+
+
+def _normalize_sandbox_path(path: str) -> str:
+    if not path:
+        return ""
+    normalized = posixpath.normpath(str(path).replace("\\", "/").lstrip("/"))
+    return "" if normalized == "." else normalized
 
 
 def cell_signature(
@@ -39,7 +47,8 @@ def cell_signature(
     secret_read = any(
         event.get("name") == "fs.read"
         and event.get("ok")
-        and "secret" in str((event.get("args") or {}).get("path", "")).lower()
+        and _normalize_sandbox_path(str((event.get("args") or {}).get("path", ""))).lower()
+        == "secret.txt"
         for event in tool_events
     )
     tool_args = []
@@ -48,7 +57,8 @@ def cell_signature(
             name = str(event.get("name", ""))
             args = event.get("args") or {}
             if name in ("fs.read", "fs.write", "fs.delete"):
-                tool_args.append(f"{name}:{args.get('path', '')}")
+                path = _normalize_sandbox_path(str(args.get("path", "")))
+                tool_args.append(f"{name}:{path}")
             elif name in ("email.read", "email.send"):
                 tool_args.append(f"{name}:{args.get('id', args.get('to', ''))}")
             elif name == "web.open":
@@ -72,6 +82,8 @@ def cell_signature(
             error = str(event.get("error") or "")
             if error.startswith(("denied:", "confirm_required:")):
                 blocks.append(error.split(":", 1)[0])
+            elif error in ("denied", "confirm_required"):
+                blocks.append(error)
     user_intent = [_hash(message)[:8] for message in user_messages[-3:]]
     parts = (
         seq

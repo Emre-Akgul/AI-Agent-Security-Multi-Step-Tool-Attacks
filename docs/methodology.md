@@ -11,11 +11,13 @@ The implementation was reconstructed from these mutually reinforcing sources:
   3.1.x score formula; and
 - public, scored Kaggle notebooks that expose candidate counts and observed scores.
 
-The locally obtainable PyPI wheel is 2.0.1, while Kaggle's gated competition input
-is reported as 3.1.2. The cell-signature implementation is byte-behavior compatible
-with the released 2.0.1 source for stored compatibility vectors. Successful-call
-filtering follows the live 3.1.x documentation: denied events affect cell signatures
-but cannot trigger predicates.
+The exact Kaggle 3.1.2 bundle is available locally as an ignored validation input.
+The implementation is checked directly against its scoring, predicate, and cell
+modules. Denied events affect cell signatures but cannot trigger predicates.
+
+Version 3.1.2 has two cell signatures per finding: a detailed display signature and
+a trace-only `score_cell_signature`. The latter drives the diversity bonus, falling
+back to the display signature only for findings produced by older SDK versions.
 
 Sources checked on 2026-08-11:
 
