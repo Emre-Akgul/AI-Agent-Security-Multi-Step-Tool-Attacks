@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "candidates.schema.json",
+  "title": "JED replay candidates",
+  "$defs": {
+    "messages": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {"type": "string", "minLength": 1, "maxLength": 10000, "pattern": "\\S"}
+    }
+  },
+  "type": "array",
+  "maxItems": 2000,
+  "items": {
+    "type": "object",
+    "required": ["user_messages"],
+    "additionalProperties": false,
+    "properties": {"user_messages": {"$ref": "#/$defs/messages"}}
+  }
+}

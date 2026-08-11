@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+build/
+dist/
+submission.csv
+artifacts/
+
+# Kaggle competition bundle (SDK fixtures include synthetic credentials and large data).
+/ai-agent-security-multi-step-tool-attacks/
+/ai-agent-security-multi-step-tool-attacks.zip

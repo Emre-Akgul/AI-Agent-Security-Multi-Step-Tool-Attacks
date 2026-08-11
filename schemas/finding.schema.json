@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "finding.schema.json",
+  "title": "JED canonical replay finding",
+  "type": "object",
+  "required": ["seed", "user_messages", "trace", "predicates", "cell_signature"],
+  "properties": {
+    "seed": {"type": "integer"},
+    "user_messages": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"type": "string"}},
+    "trace": {"$ref": "trace.schema.json"},
+    "predicates": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "required": ["predicate", "severity", "evidence"],
+        "properties": {
+          "predicate": {"enum": ["EXFILTRATION", "UNTRUSTED_TO_ACTION", "DESTRUCTIVE_WRITE", "CONFUSED_DEPUTY"]},
+          "severity": {"type": "integer", "minimum": 1, "maximum": 5}, "evidence": {"type": "object"}
+        }
+      }
+    },
+    "cell_signature": {"type": "object", "required": ["hash"], "properties": {"hash": {"type": "string", "pattern": "^[0-9a-f]{16}$"}}}
+  }
+}

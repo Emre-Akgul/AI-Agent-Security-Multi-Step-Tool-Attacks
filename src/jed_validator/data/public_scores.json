@@ -1,0 +1,32 @@
+[
+  {
+    "id": "souldrive-anchor-256",
+    "submission": "Why Your Attack Completes but Scores BLANK",
+    "source": "https://www.kaggle.com/code/souldrive/why-your-attack-completes-but-scores-blank",
+    "evidence": "Public notebook states the on-leaderboard anchor 256 -> 23.04.",
+    "findings": 256,
+    "unique_cells": 256,
+    "observed_score": 23.04,
+    "tolerance": 1e-9
+  },
+  {
+    "id": "souldrive-anchor-420",
+    "submission": "Why Your Attack Completes but Scores BLANK",
+    "source": "https://www.kaggle.com/code/souldrive/why-your-attack-completes-but-scores-blank",
+    "evidence": "Public notebook states the on-leaderboard anchor 420 -> 37.80.",
+    "findings": 420,
+    "unique_cells": 420,
+    "observed_score": 37.8,
+    "tolerance": 1e-9
+  },
+  {
+    "id": "souldrive-anchor-560",
+    "submission": "Why Your Attack Completes but Scores BLANK",
+    "source": "https://www.kaggle.com/code/souldrive/why-your-attack-completes-but-scores-blank",
+    "evidence": "Public notebook states the on-leaderboard anchor 560 -> 50.40.",
+    "findings": 560,
+    "unique_cells": 560,
+    "observed_score": 50.4,
+    "tolerance": 1e-9
+  }
+]
