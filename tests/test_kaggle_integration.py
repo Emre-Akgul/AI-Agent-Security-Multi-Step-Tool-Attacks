@@ -23,6 +23,8 @@ def test_real_kaggle_validation_smoke(tmp_path: Path) -> None:
         attack,
         kernel=resolve_kernel(),
         results_root=tmp_path / "results",
+        budget_s=60,
+        profile="integration-smoke",
     )
     assert result.summary is not None
     assert result.summary["status"] == "complete"

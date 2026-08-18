@@ -1,35 +1,17 @@
-# JED Validator
+# JED attack lab
 
-Run an `attack.py` from your local IDE against the competition-matched GPT-OSS and
-Gemma models on a Kaggle GPU. The Kaggle notebook is the only validation method in
-this repository; no local scoring approximation is used.
+An experiment workspace for improving one competition submission: [`attack.py`](attack.py).
+Codex edits that file locally; Kaggle supplies competition-matched GPT-OSS and Gemma GPUs;
+the CLI preserves SHA-verified results and makes runs comparable.
 
 ## Setup
 
-Install the project:
-
 ```bash
 python3 -m pip install -e '.[dev]'
+kaggle auth login  # or: uvx --python 3.11 --from 'kaggle>=2.2.3' kaggle auth login
 ```
 
-Authenticate with Kaggle once. A current Kaggle CLI can be used directly, or run
-through `uvx` so this project's Python 3.10 environment remains unchanged:
-
-```bash
-kaggle auth login
-
-# Alternative:
-uvx --python 3.11 --from 'kaggle>=2.2.3' kaggle auth login
-```
-
-Choose the private kernel that the runner may create and update:
-
-```bash
-export JED_KAGGLE_KERNEL=YOUR_USERNAME/aas-remote-validation
-```
-
-For non-interactive IDE and Codex runs, these values may instead be stored in the
-repository's ignored `.env` file:
+Put the non-interactive settings in the ignored `.env` file:
 
 ```dotenv
 KAGGLE_USERNAME=YOUR_USERNAME
@@ -37,86 +19,97 @@ KAGGLE_API_TOKEN=YOUR_TOKEN
 JED_KAGGLE_KERNEL=YOUR_USERNAME/aas-remote-validation
 ```
 
-`jed-validate` loads these approved Kaggle variables automatically. Shell variables
-take precedence, unrelated `.env` entries are ignored, and the file is never
-executed as shell code.
-
-`KAGGLE_USERNAME` is also supported and defaults the kernel slug to
-`aas-remote-validation`. An explicit `--kernel` option takes precedence over both
-environment variables.
-
-Before the first run, accept the competition rules and confirm that your Kaggle
-account can access both referenced GGUF model versions.
-
-## Run validation
+Download the current official SDK for Codex to inspect locally:
 
 ```bash
-jed-validate kaggle run attack.py
+jed-validate sdk sync
 ```
 
-The command:
+It is stored under ignored `.jed/competition/`; no SDK snapshot or synthetic fixture
+credential is committed.
 
-1. checks that `attack.py` defines `AttackAlgorithm.run(...)`;
-2. injects only that file into a temporary copy of
-   `scripts/aas-local-validation.ipynb`;
-3. submits a private `NvidiaTeslaT4` Kaggle notebook;
-4. streams its execution logs;
-5. evaluates GPT-OSS and Gemma sequentially; and
-6. downloads and prints the verified results.
-
-Artifacts are stored under:
-
-```text
-artifacts/kaggle/<timestamp>-<attack-sha>/
-```
-
-The downloaded manifest's attack SHA-256 must match the submitted file, preventing
-a stale or externally replaced run from being reported as the requested validation.
-
-Useful overrides:
+Surface the competition description and exact data fields after syncing:
 
 ```bash
-jed-validate kaggle run attack.py \
-  --kernel YOUR_USERNAME/another-private-kernel \
-  --accelerator NvidiaTeslaT4 \
-  --timeout 21600 \
-  --results-dir artifacts/kaggle
+jed-validate competition
+jed-validate competition --json
 ```
 
-## Resume or fetch a run
+The JSON form exposes the submission/config schema, candidate limits, trace and tool-event
+fields, every tool's arguments, fixtures, predicates, severity weights, score formula, and
+canonical cell dimensions. Values are read from the refreshed SDK where they determine
+scoring or hosted limits; [`COMPETITION.md`](COMPETITION.md) is the shorter human guide.
 
-Interrupting the local command does not stop the Kaggle job. Resume log streaming or
-download the latest artifacts with:
+## Optimization workflow
+
+Use a short single-model screen while developing a hypothesis:
 
 ```bash
-jed-validate kaggle status --follow
-jed-validate kaggle fetch
+jed-validate run attack.py \
+  --models gpt_oss \
+  --budget 600 \
+  --profile unique-http-cells
 ```
 
-The workflow is deliberately batch-oriented. It does not expose SSH, a VS Code
-tunnel, or a persistent GPU session, so idle IDE time does not consume Kaggle GPU
-quota.
-
-## Repository layout
-
-```text
-attack.py                              Starter attack implementation
-scripts/aas-local-validation.ipynb     Authoritative Kaggle evaluator
-src/jed_validator/kaggle_runner.py     Submission and monitoring workflow
-src/jed_validator/cli.py               jed-validate command
-tests/                                 Mocked runner and opt-in Kaggle tests
-```
-
-## Development
+Confirm an improvement on Gemma, then increase the budget. A full competition-parameter
+run uses both models and the official 8,750-second per-model budget:
 
 ```bash
-pytest
+jed-validate run attack.py --models gemma --budget 600 --profile unique-http-cells-gemma
+jed-validate run attack.py
+```
+
+The full run can take many hours for an adaptive candidate. `--timeout` defaults to 12
+hours. Interrupting local monitoring does not stop the Kaggle job:
+
+```bash
+jed-validate status --follow
+jed-validate fetch
+```
+
+Inspect the latest result or compare experiments:
+
+```bash
+jed-validate report
+jed-validate report --json
+jed-validate history
+```
+
+Each run records its profile, requested models, budget, attack SHA-256, scores, predicate
+counts, severity counts, successful tools, score-cell hashes, and successful prompt chains
+under `artifacts/kaggle/<timestamp>-<sha>/`. Downloaded results are rejected if the attack
+SHA does not match the submitted source.
+
+## Using a Codex goal
+
+Point Codex at [`CODEX_GOAL.md`](CODEX_GOAL.md), or use this objective:
+
+> Maximize the mean replay-validated score of `attack.py` across GPT-OSS and Gemma. Follow
+> CODEX_GOAL.md, use the official SDK as source of truth, run bounded Kaggle screens, keep
+> the best-known candidate, and continue with evidence-driven hypotheses while quota and
+> the goal budget permit.
+
+[`AGENTS.md`](AGENTS.md) keeps autonomous work scoped to the synthetic competition and
+prevents accidental leaderboard submissions, overlapping jobs, or credential commits.
+
+## Architecture
+
+The repository intentionally contains no Jupyter notebook. `scripts/remote_validation.py`
+is ordinary testable Python. At run time the CLI embeds `attack.py` plus the selected model
+and budget into a temporary Kaggle script, attaches only the requested model data, runs it
+privately, and downloads the structured artifacts. Temporary scripts and credentials are
+never uploaded together.
+
+Development checks:
+
+```bash
 ruff check .
 ruff format --check .
+pytest
 mypy src
 ```
 
-The real Kaggle smoke test is intentionally opt-in because it consumes GPU quota:
+The opt-in integration test consumes Kaggle GPU quota:
 
 ```bash
 RUN_KAGGLE_INTEGRATION=1 pytest -m kaggle_integration

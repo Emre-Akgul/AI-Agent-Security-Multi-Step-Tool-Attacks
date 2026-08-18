@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "jed-validator"
 version = "0.1.0"
-description = "Kaggle GPU validation and local scoring for the JED red-team benchmark"
+description = "Experiment workflow for Kaggle GPU validation of JED attack candidates"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}

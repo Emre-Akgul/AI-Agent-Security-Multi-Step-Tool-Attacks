@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
 
-from jed_validator import kaggle_runner
+from jed_validator.experiments import build_report, history, latest_report
 from jed_validator.kaggle_runner import (
-    ATTACK_CELL_TAG,
     CommandResult,
     KaggleRunnerError,
     ensure_kaggle_access,
@@ -36,8 +37,8 @@ def attack_file(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def notebook_path() -> Path:
-    return Path(__file__).parents[1] / "scripts" / "aas-local-validation.ipynb"
+def evaluator_path() -> Path:
+    return Path(__file__).parents[1] / "scripts" / "remote_validation.py"
 
 
 class FakeKaggleCli:
@@ -60,18 +61,25 @@ class FakeKaggleCli:
         self.live_code = live_code
         self.summary = summary or {
             "status": "complete",
+            "profile": "screen",
             "attack_sha256": None,
+            "requested_models": ["gpt_oss"],
+            "budget_s_per_model": 60.0,
             "models": {
                 "gpt_oss": {
                     "status": "complete",
                     "score_normalized_0_to_1000": 0.27,
-                },
-                "gemma": {
-                    "status": "complete",
-                    "score_normalized_0_to_1000": 0.24,
-                },
+                    "score_raw": 54.0,
+                    "findings_count": 2,
+                    "unique_canonical_cells": 2,
+                    "finding_digest": {
+                        "predicate_counts": {"EXFILTRATION": 2},
+                        "successful_prompt_chains": [["prompt one"]],
+                    },
+                }
             },
-            "local_public_mean": 0.255,
+            "mean_score": 0.27,
+            "failures": {},
         }
         self.calls: list[tuple[str, ...]] = []
 
@@ -84,25 +92,18 @@ class FakeKaggleCli:
                 return self.status_results.pop(0)
             return self.status_results[0]
         if arguments[:2] == ("kernels", "push"):
-            staged_directory = Path(arguments[arguments.index("--path") + 1])
-            notebook = next(staged_directory.glob("*.ipynb"))
-            generated = json.loads(notebook.read_text(encoding="utf-8"))
-            injected = next(
-                cell
-                for cell in generated["cells"]
-                if ATTACK_CELL_TAG in cell.get("metadata", {}).get("tags", [])
-            )
-            digest_line = next(
-                line for line in injected["source"] if line.startswith("ATTACK_SHA256 = ")
-            )
-            self.summary["attack_sha256"] = digest_line.split("=", 1)[1].strip().strip("'")
+            staged = Path(arguments[arguments.index("--path") + 1])
+            source = (staged / "remote_validation.py").read_text(encoding="utf-8")
+            match = re.search(r"^ATTACK_SHA256 = '([0-9a-f]+)'$", source, re.MULTILINE)
+            assert match is not None
+            self.summary["attack_sha256"] = match.group(1)
             return self.push_result
         if arguments[:2] == ("kernels", "output"):
             if self.output_result.returncode == 0:
                 destination = Path(arguments[arguments.index("--path") + 1])
-                artifact_dir = destination / "artifacts"
-                artifact_dir.mkdir(parents=True, exist_ok=True)
-                (artifact_dir / "validation_summary.json").write_text(
+                artifacts = destination / "artifacts"
+                artifacts.mkdir(parents=True, exist_ok=True)
+                (artifacts / "validation_summary.json").write_text(
                     json.dumps(self.summary), encoding="utf-8"
                 )
             return self.output_result
@@ -114,184 +115,114 @@ class FakeKaggleCli:
 
 
 def test_resolve_kernel_precedence_and_default() -> None:
-    env = {
-        "JED_KAGGLE_KERNEL": "env-owner/env-kernel",
-        "KAGGLE_USERNAME": "fallback-owner",
-    }
-    assert resolve_kernel("flag-owner/flag-kernel", env) == "flag-owner/flag-kernel"
-    assert resolve_kernel(environment=env) == "env-owner/env-kernel"
-    assert resolve_kernel(environment={"KAGGLE_USERNAME": "owner"}) == (
-        "owner/aas-remote-validation"
-    )
+    env = {"JED_KAGGLE_KERNEL": "env-owner/env-kernel", "KAGGLE_USERNAME": "owner"}
+    assert resolve_kernel("arg-owner/arg-kernel", env) == "arg-owner/arg-kernel"
+    assert resolve_kernel(None, env) == "env-owner/env-kernel"
+    assert resolve_kernel(None, {"KAGGLE_USERNAME": "owner"}) == "owner/aas-remote-validation"
 
 
-def test_resolve_kernel_requires_configuration() -> None:
-    with pytest.raises(KaggleRunnerError, match="JED_KAGGLE_KERNEL"):
-        resolve_kernel(environment={})
-    with pytest.raises(KaggleRunnerError, match="owner/kernel-slug"):
-        resolve_kernel("Owner/not_ok", {})
-
-
-def test_dotenv_loads_only_approved_keys_without_overriding_environment(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+def test_dotenv_loads_only_approved_missing_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     dotenv = tmp_path / ".env"
     dotenv.write_text(
-        "KAGGLE_USERNAME=dotenv-user\n"
-        "KAGGLE_API_TOKEN='secret-token'\n"
-        "JED_KAGGLE_KERNEL=dotenv-user/remote-validation\n"
-        "UNRELATED_SETTING=do-not-load\n",
+        "KAGGLE_USERNAME=owner\nKAGGLE_API_TOKEN='secret-token'\nUNRELATED=nope\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("KAGGLE_USERNAME", "shell-user")
-    monkeypatch.delenv("KAGGLE_API_TOKEN", raising=False)
-    monkeypatch.delenv("JED_KAGGLE_KERNEL", raising=False)
-    monkeypatch.delenv("UNRELATED_SETTING", raising=False)
-
+    for key in ("KAGGLE_USERNAME", "KAGGLE_API_TOKEN", "UNRELATED"):
+        monkeypatch.delenv(key, raising=False)
     load_dotenv(dotenv)
-
-    assert os.environ["KAGGLE_USERNAME"] == "shell-user"
+    assert os.environ["KAGGLE_USERNAME"] == "owner"
     assert os.environ["KAGGLE_API_TOKEN"] == "secret-token"
-    assert os.environ["JED_KAGGLE_KERNEL"] == "dotenv-user/remote-validation"
-    assert "UNRELATED_SETTING" not in os.environ
+    assert "UNRELATED" not in os.environ
 
 
-def test_attack_preflight_rejects_syntax_and_missing_run(tmp_path: Path) -> None:
-    invalid = tmp_path / "invalid.py"
-    invalid.write_text("class AttackAlgorithm(:\n", encoding="utf-8")
-    with pytest.raises(KaggleRunnerError, match="invalid Python syntax"):
-        validate_attack_source(invalid)
-
-    missing_run = tmp_path / "missing_run.py"
-    missing_run.write_text("class AttackAlgorithm:\n    pass\n", encoding="utf-8")
-    with pytest.raises(KaggleRunnerError, match="define a `run` method"):
-        validate_attack_source(missing_run)
+@pytest.mark.parametrize("source", ["x = 1\n", "class AttackAlgorithm: pass\n", "bad python !"])
+def test_attack_validation_rejects_invalid_contract(tmp_path: Path, source: str) -> None:
+    path = tmp_path / "attack.py"
+    path.write_text(source, encoding="utf-8")
+    with pytest.raises(KaggleRunnerError):
+        validate_attack_source(path)
 
 
-def test_stage_kernel_injects_exact_attack_and_does_not_mutate_sources(
-    tmp_path: Path,
-    notebook_path: Path,
-    attack_file: Path,
+def test_stage_kernel_embeds_attack_config_and_preserves_sources(
+    tmp_path: Path, evaluator_path: Path, attack_file: Path
 ) -> None:
-    notebook_before = notebook_path.read_bytes()
+    evaluator_before = evaluator_path.read_bytes()
     attack_before = attack_file.read_bytes()
     staged = stage_kernel(
-        notebook_path,
+        evaluator_path,
         attack_file,
         "owner/aas-remote-validation",
         "NvidiaTeslaT4",
         tmp_path / "stage",
+        models=("gpt_oss",),
+        budget_s=600,
+        profile="test-screen",
     )
-
-    assert notebook_path.read_bytes() == notebook_before
+    assert evaluator_path.read_bytes() == evaluator_before
     assert attack_file.read_bytes() == attack_before
-    generated = json.loads(staged.notebook_path.read_text(encoding="utf-8"))
-    cells = [
-        cell
-        for cell in generated["cells"]
-        if ATTACK_CELL_TAG in cell.get("metadata", {}).get("tags", [])
-    ]
-    assert len(cells) == 1
-    decoded_attack = tmp_path / "decoded.py"
-    exec("".join(cells[0]["source"]), {"ATTACK_PATH": decoded_attack})
-    assert decoded_attack.read_bytes() == attack_before
-    assert all(
-        cell.get("execution_count") is None and cell.get("outputs") == []
-        for cell in generated["cells"]
-        if cell["cell_type"] == "code"
-    )
-
+    generated = staged.code_path.read_text(encoding="utf-8")
+    payload = re.search(r"^ATTACK_PAYLOAD_B64 = '([^']+)'$", generated, re.MULTILINE)
+    assert payload is not None
+    assert base64.b64decode(payload.group(1)) == attack_before
+    assert "REQUESTED_MODELS = ('gpt_oss',)" in generated
+    assert "REQUESTED_BUDGET_S = 600.0" in generated
+    assert "RUN_PROFILE = 'test-screen'" in generated
+    compile(generated, str(staged.code_path), "exec")
     metadata = json.loads(staged.metadata_path.read_text(encoding="utf-8"))
     assert metadata == kernel_metadata(
         "owner/aas-remote-validation",
-        notebook_path.name,
+        "remote_validation.py",
         "NvidiaTeslaT4",
+        ("gpt_oss",),
     )
-    uploaded_text = staged.notebook_path.read_text(encoding="utf-8")
-    assert "KAGGLE_API_TOKEN" not in uploaded_text
-    assert "kaggle.json" not in uploaded_text
+    assert metadata["kernel_type"] == "script"
+    assert len(metadata["model_sources"]) == 1
+    assert "KAGGLE_API_TOKEN" not in generated
+    assert "kaggle.json" not in generated
 
 
-def test_stage_kernel_requires_exactly_one_injection_cell(
-    tmp_path: Path,
-    notebook_path: Path,
-    attack_file: Path,
+def test_stage_rejects_unknown_model(
+    tmp_path: Path, evaluator_path: Path, attack_file: Path
 ) -> None:
-    notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
-    for cell in notebook["cells"]:
-        cell.get("metadata", {}).pop("tags", None)
-    broken = tmp_path / "broken.ipynb"
-    broken.write_text(json.dumps(notebook), encoding="utf-8")
-    with pytest.raises(KaggleRunnerError, match="exactly one"):
+    with pytest.raises(KaggleRunnerError, match="Unknown validation model"):
         stage_kernel(
-            broken,
+            evaluator_path,
             attack_file,
             "owner/aas-remote-validation",
             "NvidiaTeslaT4",
-            tmp_path / "stage",
+            tmp_path,
+            models=("unknown",),
         )
 
 
-def test_access_and_concurrency_failures_are_clear() -> None:
-    unauthenticated = FakeKaggleCli(auth_result=CommandResult(1, "", "401 Unauthorized"))
-    with pytest.raises(KaggleRunnerError, match="authentication check.*Unauthorized"):
-        ensure_kaggle_access(unauthenticated)
-
-    active = FakeKaggleCli(status_results=[CommandResult(0, "KernelWorkerStatus.RUNNING", "")])
-    with pytest.raises(KaggleRunnerError, match="already has a queued or running job"):
+def test_auth_and_active_kernel_errors() -> None:
+    with pytest.raises(KaggleRunnerError, match="authentication"):
+        ensure_kaggle_access(FakeKaggleCli(auth_result=CommandResult(1, "", "unauthorized")))
+    active = FakeKaggleCli(status_results=[CommandResult(0, "RUNNING", "")])
+    with pytest.raises(KaggleRunnerError, match="already has"):
         ensure_kernel_idle(active, "owner/aas-remote-validation")
 
-    failed = FakeKaggleCli(
-        status_results=[
-            CommandResult(
-                0,
-                'owner/kernel has status "error"\nFailure message: "failed while running model"',
-                "",
-            )
-        ]
-    )
-    ensure_kernel_idle(failed, "owner/aas-remote-validation")
 
-
-def test_first_run_accepts_kaggle_missing_kernel_permission_response() -> None:
-    missing = FakeKaggleCli(
-        status_results=[
-            CommandResult(
-                1,
-                "",
-                "Cannot access kernel 'owner/aas-remote-validation' "
-                "(Permission 'kernels.get' was denied). The most likely cause is a wrong "
-                "kernel slug.",
-            )
-        ]
-    )
-    ensure_kernel_idle(missing, "owner/aas-remote-validation")
-
-
-def test_successful_remote_run_uses_versioned_output_and_writes_manifest(
-    tmp_path: Path,
-    notebook_path: Path,
-    attack_file: Path,
+def test_successful_run_uses_slug_for_logs_and_version_for_output(
+    tmp_path: Path, evaluator_path: Path, attack_file: Path
 ) -> None:
     cli = FakeKaggleCli(
-        status_results=[
-            CommandResult(1, "", "404 not found"),
-            CommandResult(0, "KernelWorkerStatus.COMPLETE", ""),
-        ]
+        status_results=[CommandResult(1, "", "404"), CommandResult(0, "COMPLETE", "")]
     )
     result = run_remote_validation(
         attack_file,
         kernel="owner/aas-remote-validation",
         results_root=tmp_path / "results",
-        notebook_path=notebook_path,
+        evaluator_path=evaluator_path,
         cli=cli,
+        models=("gpt_oss",),
+        budget_s=60,
+        profile="screen",
     )
-
     assert result.version == 7
-    assert result.summary is not None
-    assert result.summary["local_public_mean"] == 0.255
-    assert (result.result_directory / "local_run.json").is_file()
+    assert result.summary is not None and result.summary["mean_score"] == 0.27
     assert ("kernels", "logs", "--follow", "owner/aas-remote-validation") in cli.calls
     assert ("kernels", "status", "owner/aas-remote-validation") in cli.calls
     assert any(
@@ -299,15 +230,13 @@ def test_successful_remote_run_uses_versioned_output_and_writes_manifest(
     )
 
 
-def test_log_disconnect_falls_back_to_status_polling(
-    tmp_path: Path,
-    notebook_path: Path,
-    attack_file: Path,
+def test_log_disconnect_falls_back_to_polling(
+    tmp_path: Path, evaluator_path: Path, attack_file: Path
 ) -> None:
     cli = FakeKaggleCli(
         live_code=1,
         status_results=[
-            CommandResult(1, "", "404 not found"),
+            CommandResult(1, "", "404"),
             CommandResult(0, "RUNNING", ""),
             CommandResult(0, "COMPLETE", ""),
         ],
@@ -316,143 +245,63 @@ def test_log_disconnect_falls_back_to_status_polling(
         attack_file,
         kernel="owner/aas-remote-validation",
         results_root=tmp_path / "results",
-        notebook_path=notebook_path,
+        evaluator_path=evaluator_path,
         cli=cli,
         poll_interval_s=1,
+        models=("gpt_oss",),
+        budget_s=60,
     )
     assert result.summary is not None
 
 
-@pytest.mark.parametrize(
-    ("message", "expected"),
-    [
-        ("GPU quota exhausted", "quota exhausted"),
-        ("Model source is not accessible", "not accessible"),
-    ],
-)
-def test_submission_errors_surface_kaggle_details(
-    tmp_path: Path,
-    notebook_path: Path,
-    attack_file: Path,
-    message: str,
-    expected: str,
-) -> None:
-    cli = FakeKaggleCli(push_result=CommandResult(1, "", message))
-    with pytest.raises(KaggleRunnerError, match=expected):
-        run_remote_validation(
-            attack_file,
-            kernel="owner/aas-remote-validation",
-            results_root=tmp_path / "results",
-            notebook_path=notebook_path,
-            cli=cli,
-        )
-
-
-def test_failed_remote_run_downloads_partial_artifacts(
-    tmp_path: Path,
-    notebook_path: Path,
-    attack_file: Path,
-) -> None:
+def test_sha_mismatch_is_rejected(tmp_path: Path, evaluator_path: Path, attack_file: Path) -> None:
     cli = FakeKaggleCli(
-        status_results=[
-            CommandResult(1, "", "404 not found"),
-            CommandResult(0, "KernelWorkerStatus.ERROR", ""),
-        ],
-        summary={"status": "failed", "models": {}, "failures": {"gemma": {}}},
+        status_results=[CommandResult(1, "", "404"), CommandResult(0, "COMPLETE", "")]
     )
-    with pytest.raises(KaggleRunnerError, match="Remote validation failed"):
-        run_remote_validation(
-            attack_file,
-            kernel="owner/aas-remote-validation",
-            results_root=tmp_path / "results",
-            notebook_path=notebook_path,
-            cli=cli,
-        )
-    assert list((tmp_path / "results").rglob("validation_summary.json"))
-    assert list((tmp_path / "results").rglob("local_run.json"))
-
-
-def test_download_failure_after_success_is_reported(
-    tmp_path: Path,
-    notebook_path: Path,
-    attack_file: Path,
-) -> None:
-    cli = FakeKaggleCli(
-        status_results=[
-            CommandResult(1, "", "404 not found"),
-            CommandResult(0, "COMPLETE", ""),
-        ],
-        output_result=CommandResult(1, "", "download unavailable"),
-    )
-    with pytest.raises(KaggleRunnerError, match="artifact download.*unavailable"):
-        run_remote_validation(
-            attack_file,
-            kernel="owner/aas-remote-validation",
-            results_root=tmp_path / "results",
-            notebook_path=notebook_path,
-            cli=cli,
-        )
-
-
-def test_missing_version_is_rejected_after_submission(
-    tmp_path: Path,
-    notebook_path: Path,
-    attack_file: Path,
-) -> None:
-    cli = FakeKaggleCli(push_result=CommandResult(0, "Kernel pushed", ""))
-    with pytest.raises(KaggleRunnerError, match="did not report its version number"):
-        run_remote_validation(
-            attack_file,
-            kernel="owner/aas-remote-validation",
-            results_root=tmp_path / "results",
-            notebook_path=notebook_path,
-            cli=cli,
-        )
-
-
-def test_stale_download_is_rejected_by_attack_hash(
-    tmp_path: Path,
-    notebook_path: Path,
-    attack_file: Path,
-) -> None:
-    cli = FakeKaggleCli(
-        status_results=[
-            CommandResult(1, "", "404 not found"),
-            CommandResult(0, "COMPLETE", ""),
-        ]
-    )
+    cli.summary["attack_sha256"] = "will-be-overwritten-during-push"
     original_capture = cli.capture
 
-    def capture_with_stale_output(*arguments: str) -> CommandResult:
+    def capture(*arguments: str) -> CommandResult:
         result = original_capture(*arguments)
         if arguments[:2] == ("kernels", "output"):
             destination = Path(arguments[arguments.index("--path") + 1])
             summary_path = destination / "artifacts" / "validation_summary.json"
-            summary = json.loads(summary_path.read_text(encoding="utf-8"))
-            summary["attack_sha256"] = "0" * 64
-            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+            value = json.loads(summary_path.read_text())
+            value["attack_sha256"] = "wrong"
+            summary_path.write_text(json.dumps(value), encoding="utf-8")
         return result
 
-    cli.capture = capture_with_stale_output  # type: ignore[method-assign]
-    with pytest.raises(KaggleRunnerError, match="do not match the submitted attack"):
+    cli.capture = capture  # type: ignore[method-assign]
+    with pytest.raises(KaggleRunnerError, match="do not match"):
         run_remote_validation(
             attack_file,
             kernel="owner/aas-remote-validation",
             results_root=tmp_path / "results",
-            notebook_path=notebook_path,
+            evaluator_path=evaluator_path,
             cli=cli,
+            models=("gpt_oss",),
+            budget_s=60,
         )
 
 
-def test_polling_timeout_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
-    cli = FakeKaggleCli(status_results=[CommandResult(0, "RUNNING", "")])
-    times = iter((0.0, 0.0, 2.0))
-    monkeypatch.setattr("jed_validator.kaggle_runner.time.monotonic", lambda: next(times))
-    monkeypatch.setattr("jed_validator.kaggle_runner.time.sleep", lambda _: None)
-    with pytest.raises(KaggleRunnerError, match="Timed out"):
-        kaggle_runner._wait_for_terminal_status(  # noqa: SLF001
-            cli,
-            "owner/aas-remote-validation/7",
-            timeout_s=1,
-            poll_interval_s=1,
-        )
+def test_report_and_history_surface_optimization_feedback(
+    tmp_path: Path, evaluator_path: Path, attack_file: Path
+) -> None:
+    cli = FakeKaggleCli(
+        status_results=[CommandResult(1, "", "404"), CommandResult(0, "COMPLETE", "")]
+    )
+    result = run_remote_validation(
+        attack_file,
+        kernel="owner/aas-remote-validation",
+        results_root=tmp_path / "results",
+        evaluator_path=evaluator_path,
+        cli=cli,
+        models=("gpt_oss",),
+        budget_s=60,
+    )
+    report = latest_report(result.result_directory)
+    assert report["models"][0]["predicates"] == {"EXFILTRATION": 2}
+    rows = history(tmp_path / "results")
+    assert rows[0]["mean_score"] == 0.27
+    direct = build_report(result.summary or {}, result.result_directory)
+    assert direct["profile"] == "screen"
