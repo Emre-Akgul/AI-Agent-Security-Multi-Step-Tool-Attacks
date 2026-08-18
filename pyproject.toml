@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "jed-validator"
 version = "0.1.0"
-description = "Local validation and scoring for the JED red-team attack benchmark"
+description = "Experiment workflow for Kaggle GPU validation of JED attack candidates"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -24,6 +24,7 @@ packages = ["src/jed_validator"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["kaggle_integration: opt-in test that consumes Kaggle GPU quota"]
 
 [tool.ruff]
 line-length = 100

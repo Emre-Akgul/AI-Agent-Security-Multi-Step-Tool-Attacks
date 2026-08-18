@@ -9,7 +9,10 @@ build/
 dist/
 submission.csv
 artifacts/
+.jed/
 
 # Kaggle competition bundle (SDK fixtures include synthetic credentials and large data).
 /ai-agent-security-multi-step-tool-attacks/
 /ai-agent-security-multi-step-tool-attacks.zip
+
+.env
